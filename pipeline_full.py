@@ -2,7 +2,7 @@
 # pipeline_full.py
 # Sequential Chunk Integration (0 → 14)
 # Deterministic Scene Ingestion + Micro-Beats/Arcs + Merch Evidence + Trinity Advisory
-# Scene Metadata Normalization Added
+# Scene Metadata Normalization + Inflection Points Cross-Chunk Continuity
 # ================================
 
 import json
@@ -44,14 +44,9 @@ KEYWORDS = ["dominance", "submission", "tension", "release", "erotic", "gaze", "
 # Helpers
 # -----------------------
 def normalize_scene_metadata(scene_metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Enforce canonical defaults and fill missing fields.
-    Ensures deterministic UUID regeneration if core fields change.
-    """
     defaults = {"book_code": "UNK", "part": "1", "episode": "1", "scene": "1"}
     for k, v in defaults.items():
         scene_metadata.setdefault(k, v)
-    # Regenerate scene_uuid if missing or invalid
     scene_metadata["scene_uuid"] = safe_generate_scene_uuid(scene_metadata)
     return scene_metadata
 
@@ -118,6 +113,24 @@ def identify_inflection_points_weighted(micro_beats: List[Dict[str, Any]]) -> Li
             logging.info(f"Inflection point detected: {beat['beat_uuid']}")
     return points
 
+def propagate_inflection_points_across_chunks(scene_record: Dict[str, Any], previous_scene_record: Optional[Dict[str, Any]] = None, next_scene_record: Optional[Dict[str, Any]] = None) -> List[str]:
+    """
+    Extend inflection points with previous and next scene continuity.
+    """
+    inflection_points = list(scene_record.get("inflection_points", []))
+    if previous_scene_record:
+        inflection_points = previous_scene_record.get("inflection_points", []) + inflection_points
+    if next_scene_record:
+        inflection_points += next_scene_record.get("inflection_points", [])
+    # Deduplicate while preserving order
+    seen = set()
+    continuity_points = []
+    for p in inflection_points:
+        if p not in seen:
+            continuity_points.append(p)
+            seen.add(p)
+    return continuity_points
+
 def package_scene_record(scene_text: str, scene_metadata: Dict[str, Any], arcs: Dict[str, Any], beats: List[Dict[str, Any]]) -> Dict[str, Any]:
     core_id = f"{scene_metadata.get('book_code','UNK')}_P{scene_metadata.get('part','1')}_E{scene_metadata.get('episode','1')}_S{scene_metadata.get('scene','1')}"
     return {
@@ -146,10 +159,9 @@ def package_scene_record(scene_text: str, scene_metadata: Dict[str, Any], arcs: 
 # -----------------------
 # Unified Full Pipeline
 # -----------------------
-def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = range(0, 15)) -> Dict[str, Any]:
-    """
-    Sequentially integrate pipeline_chunk0 → pipeline_chunk14 with normalized scene metadata.
-    """
+def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = range(0, 15),
+                  previous_scene_record: Optional[Dict[str, Any]] = None,
+                  next_scene_record: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     pf = read_passfile(passfile_path)
 
     for chunk_index in chunk_range:
@@ -158,9 +170,7 @@ def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = 
         scene_text = pf.get("scene_text", "")
         scene_metadata = pf.get("scene_metadata", {})
 
-        # -----------------------
         # Normalize Scene Metadata
-        # -----------------------
         scene_metadata = normalize_scene_metadata(scene_metadata)
         pf["scene_metadata"] = scene_metadata
         pf["refs"] = enforce_canonical_merch_refs(scene_metadata)
@@ -182,7 +192,11 @@ def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = 
         # Scene Record
         scene_record = package_scene_record(scene_text, scene_metadata, arcs, pf["beat_list"])
         scene_record["micro_beats"] = micro_beats
-        scene_record["inflection_points"] = inflection_points
+        scene_record["inflection_points"] = propagate_inflection_points_across_chunks(
+            {"inflection_points": inflection_points},
+            previous_scene_record=previous_scene_record,
+            next_scene_record=next_scene_record
+        )
 
         # Merch Evidence & Trinity Advisory
         merch_evidence = extract_merch_evidence(scene_metadata)
