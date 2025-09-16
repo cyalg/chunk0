@@ -1,8 +1,8 @@
 # -----------------------
-# workflow_utils v5.6 - Full Production
-# Added: merge_passfile_chunks for atomic multi-chunk merges
+# workflow_utils v5.7 - Full Production
+# Added: atomic merge, configurable duplicate handling
 # -----------------------
-import re, uuid, json, logging
+import re, uuid, json, logging, tempfile, shutil
 from pathlib import Path
 from copy import deepcopy
 from typing import List, Dict, Any, Optional, Union
@@ -71,11 +71,10 @@ def validate_minimal_canonical(scene_records: Union[Dict[str, Any], List[Dict[st
     validated = {}
     seen_uuids = set()
     
+    schema = None
     if schema_path and schema_path.exists():
         with open(schema_path) as f:
             schema = json.load(f)
-    else:
-        schema = None
 
     for rec in records:
         rec_copy = deepcopy(rec)
@@ -119,20 +118,31 @@ def write_passfile(data: Dict[str, Any], path: Optional[str] = None, overwrite: 
         backup_path = p.with_suffix(".bak")
         p.rename(backup_path)
         logging.info(f"Existing passfile backed up to {backup_path}")
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    # Atomic write via temp file + rename
+    tmp_file = tempfile.NamedTemporaryFile("w", delete=False, dir=p.parent, encoding="utf-8")
+    try:
+        json.dump(data, tmp_file, ensure_ascii=False, indent=2)
+        tmp_file.close()
+        shutil.move(tmp_file.name, p)
+    except Exception:
+        tmp_file.close()
+        Path(tmp_file.name).unlink(missing_ok=True)
+        raise
 
 def write_passfile_strict(key: str, data: Any, path: Optional[str] = None, overwrite: bool = True) -> None:
     pf = read_passfile(path)
     pf[key] = data
     write_passfile(pf, path, overwrite=overwrite)
 
-def merge_passfile_chunks(chunks: List[Dict[str, Any]], path: Optional[str] = None, overwrite: bool = True) -> None:
+def merge_passfile_chunks(chunks: List[Dict[str, Any]],
+                          path: Optional[str] = None,
+                          overwrite_existing: bool = False) -> None:
     """
     Atomically merge multiple scene chunks into a passfile.
     - Validates each chunk.
     - Preserves canonical UUIDs and keys.
-    - Skips duplicates with a warning.
+    - overwrite_existing=True replaces duplicates; otherwise skips.
     """
     pf_path = Path(path) if path else PASSFILE_PATH
     passfile_data = read_passfile(pf_path)
@@ -141,11 +151,14 @@ def merge_passfile_chunks(chunks: List[Dict[str, Any]], path: Optional[str] = No
 
     for scene_uuid, chunk in validated_chunks.items():
         if scene_uuid in passfile_data:
-            logging.warning(f"Scene UUID {scene_uuid} already exists in passfile. Skipping merge for this chunk.")
-            continue
+            if overwrite_existing:
+                logging.info(f"Overwriting existing scene_uuid {scene_uuid}.")
+            else:
+                logging.warning(f"Scene UUID {scene_uuid} exists. Skipping merge.")
+                continue
         passfile_data[scene_uuid] = chunk
 
-    write_passfile(passfile_data, pf_path, overwrite=overwrite)
+    write_passfile(passfile_data, pf_path, overwrite=True)
 
 # -----------------------
 # Micro-Beat & Arc Utilities
