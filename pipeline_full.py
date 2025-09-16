@@ -1,10 +1,10 @@
 # ================================
-# pipeline_full.py
+# pipeline_full.py — Unified Production Version
 # Sequential Chunk Integration (0 → 15)
 # Continuity Engine + Deterministic Scene Ingestion + Micro-Beats/Arcs
 # Merch Evidence & Trinity Advisory
+# Enhanced Logging & Auditing
 # Schema validation per chunk
-# Merch duplicate/missing verification
 # ================================
 
 import json
@@ -50,8 +50,11 @@ ROLLING_AVG_WINDOW = 3
 # -----------------------
 def normalize_scene_metadata(scene_metadata: Dict[str, Any]) -> Dict[str, Any]:
     defaults = {"book_code": "UNK", "part": "1", "episode": "1", "scene": "1"}
+    missing_keys = [k for k in defaults if k not in scene_metadata]
     for k, v in defaults.items():
         scene_metadata.setdefault(k, v)
+    if missing_keys:
+        logging.info(f"Missing metadata keys set to defaults: {missing_keys}")
     scene_metadata["scene_uuid"] = safe_generate_scene_uuid(scene_metadata)
     return scene_metadata
 
@@ -68,6 +71,7 @@ def safe_generate_scene_uuid(scene_metadata: Dict[str, Any]) -> str:
     return new_uuid
 
 def assign_beat_uuids_stable(beat_list: List[Dict[str, Any]], scene_metadata: Dict[str, Any]):
+    seen_uuids = set()
     for idx, beat in enumerate(beat_list):
         if not beat.get("beat_uuid"):
             beat["beat_uuid"] = deterministic_uuid(
@@ -78,7 +82,10 @@ def assign_beat_uuids_stable(beat_list: List[Dict[str, Any]], scene_metadata: Di
                 object_type="beat",
                 index=idx
             )
-            logging.info(f"Assigned beat_uuid: {beat['beat_uuid']}")
+        if beat["beat_uuid"] in seen_uuids:
+            logging.warning(f"Duplicate beat_uuid detected: {beat['beat_uuid']}")
+        seen_uuids.add(beat["beat_uuid"])
+    logging.info(f"Assigned {len(beat_list)} beat UUIDs.")
 
 def compute_micro_beats_adaptive(scene_text: str, beat_list: Optional[List[Dict[str, Any]]] = None, chunk_size: int = DEFAULT_CHUNK_SIZE) -> List[Dict[str, Any]]:
     micro_beats = []
@@ -93,15 +100,13 @@ def compute_micro_beats_adaptive(scene_text: str, beat_list: Optional[List[Dict[
             chunk = " ".join(words[i:i + chunk_size])
             counts = {kw: chunk.lower().count(kw) for kw in KEYWORDS}
             micro_beats.append({"beat_uuid": f"synthetic_{i//chunk_size}", "text": chunk, "keyword_counts": counts})
+    logging.info(f"Computed {len(micro_beats)} micro-beats.")
     return micro_beats
 
 def compute_arcs_adaptive(micro_beats: List[Dict[str, Any]],
                            thresholds: Optional[Dict[str, float]] = None,
                            rolling_window: int = ROLLING_AVG_WINDOW) -> Dict[str, Any]:
     thresholds = thresholds or DEFAULT_ARC_THRESHOLDS
-    erotic_peak_thresh = thresholds.get("erotic_peak", 0.3)
-    fast_word_count = thresholds.get("fast_pacing_word_count", 30)
-
     emotional_arc, erotic_arc, pacing_notes = {}, {}, {}
     erotic_values = []
 
@@ -112,13 +117,13 @@ def compute_arcs_adaptive(micro_beats: List[Dict[str, Any]],
         normalized = {k: v / total for k, v in counts.items()}
         emotional_arc[beat_id] = normalized
         erotic_values.append(normalized.get("erotic", 0))
-        pacing_notes[beat_id] = "fast" if len(beat["text"].split()) > fast_word_count else "steady"
+        pacing_notes[beat_id] = "fast" if len(beat["text"].split()) > thresholds["fast_pacing_word_count"] else "steady"
 
     for i, beat in enumerate(micro_beats):
         window_vals = erotic_values[max(0, i - rolling_window + 1): i + 1]
         smoothed = mean(window_vals)
         beat_id = beat["beat_uuid"]
-        erotic_arc[beat_id] = "peak" if smoothed > erotic_peak_thresh else "build"
+        erotic_arc[beat_id] = "peak" if smoothed > thresholds["erotic_peak"] else "build"
 
     return {"emotional_arc": emotional_arc, "erotic_arc": erotic_arc, "pacing_strategy_notes": pacing_notes}
 
@@ -130,7 +135,7 @@ def identify_inflection_points_weighted(micro_beats: List[Dict[str, Any]]) -> Li
             score += micro_beats[i-1]["keyword_counts"].get("erotic", 0)
         if score > 1:
             points.append(beat["beat_uuid"])
-            logging.info(f"Inflection point detected: {beat['beat_uuid']}")
+    logging.info(f"Identified {len(points)} inflection points.")
     return points
 
 def propagate_inflection_points_across_chunks(scene_record: Dict[str, Any], previous_scene_record: Optional[Dict[str, Any]] = None, next_scene_record: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -164,7 +169,7 @@ def package_scene_record(scene_text: str, scene_metadata: Dict[str, Any], arcs: 
             "emotional_arc": arcs["emotional_arc"],
             "erotic_arc": arcs["erotic_arc"],
             "pacing_strategy_notes": arcs["pacing_strategy_notes"],
-            "connected_completion_arcs": []  # continuity arcs placeholder
+            "connected_completion_arcs": []
         },
         "cross_references": {
             "previous_scene": scene_metadata.get("previous_scene"),
@@ -174,40 +179,45 @@ def package_scene_record(scene_text: str, scene_metadata: Dict[str, Any], arcs: 
     }
 
 # -----------------------
+# Continuity Map Logger
+# -----------------------
+def log_continuity_map(scene_record: Dict[str, Any]):
+    arcs = scene_record["sections"].get("connected_completion_arcs", [])
+    logging.info(f"Continuity Map for scene_uuid {scene_record['scene_uuid']}: {' -> '.join(arcs)}")
+
+# -----------------------
 # Merch Reference Verification
 # -----------------------
 def verify_merch_refs_across_chunks(passfile: Dict[str, Any], scene_metadata: Dict[str, Any]):
     all_refs = []
-    for idx in range(16):  # include chunk 15
+    for idx in range(16):
         chunk = passfile.get(f"chunk_{idx}", {})
         refs = chunk.get("scene_metadata", {}).get("merch_refs", [])
         all_refs.extend(refs)
     duplicates = set([r for r in all_refs if all_refs.count(r) > 1])
     missing = [r for r in all_refs if not r]
     if duplicates:
-        logging.warning(f"Duplicate merch references detected across chunks: {duplicates}")
+        logging.warning(f"Duplicate merch references: {duplicates}")
     if missing:
-        logging.warning(f"Missing merch references detected across chunks: {missing}")
+        logging.warning(f"Missing merch references: {missing}")
     return duplicates, missing
 
 # -----------------------
-# Continuity Integration for Chunk 15
+# Continuity Integration
 # -----------------------
 def update_continuity_arcs(scene_record: Dict[str, Any], pf: Dict[str, Any], chunk_index: int):
     connected_arcs = []
-    # Gather connected_completion_arcs from prior chunks
     for idx in range(chunk_index):
         prior_chunk = pf.get(f"chunk_{idx}", {})
         arcs = prior_chunk.get("sections", {}).get("connected_completion_arcs", [])
         connected_arcs.extend(arcs)
-    # Add current chunk UUID to continuity
     connected_arcs.append(scene_record["scene_uuid"])
     scene_record["sections"]["connected_completion_arcs"] = connected_arcs
-    logging.info(f"Updated connected_completion_arcs for chunk_{chunk_index}: {connected_arcs}")
+    log_continuity_map(scene_record)
     return scene_record
 
 # -----------------------
-# Unified Full Pipeline
+# Full Pipeline
 # -----------------------
 def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = range(0, 16),
                   previous_scene_record: Optional[Dict[str, Any]] = None,
@@ -217,76 +227,59 @@ def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = 
     pf = read_passfile(passfile_path)
 
     for chunk_index in chunk_range:
-        logging.info(f"Processing pipeline_chunk{chunk_index}...")
-
+        logging.info(f"Processing chunk {chunk_index}...")
         scene_text = pf.get("scene_text", "")
         scene_metadata = pf.get("scene_metadata", {})
 
-        # Normalize Scene Metadata
+        # Normalize & audit
         scene_metadata = normalize_scene_metadata(scene_metadata)
         pf["scene_metadata"] = scene_metadata
-
-        # Enforce canonical merch refs early
         scene_metadata["merch_refs"] = enforce_canonical_merch_refs(scene_metadata)
 
-        # Initialize Defaults
         pf.setdefault("beat_list", [])
-        pf.setdefault("micro_beats", [])
-        pf.setdefault("sections", {})
-        pf.setdefault("inflection_points", [])
-        pf.setdefault("notes", {})
-        pf.setdefault("cross_references", {})
-
-        # Beats & Micro-Beats
         assign_beat_uuids_stable(pf["beat_list"], scene_metadata)
+
         micro_beats = compute_micro_beats_adaptive(scene_text, pf["beat_list"])
         arcs = compute_arcs_adaptive(micro_beats, thresholds=arc_thresholds)
         inflection_points = identify_inflection_points_weighted(micro_beats)
 
-        # Scene Record
         scene_record = package_scene_record(scene_text, scene_metadata, arcs, pf["beat_list"])
         scene_record["micro_beats"] = micro_beats
         scene_record["inflection_points"] = propagate_inflection_points_across_chunks(
-            {"inflection_points": inflection_points},
-            previous_scene_record=previous_scene_record,
-            next_scene_record=next_scene_record
+            {"inflection_points": inflection_points}, previous_scene_record, next_scene_record
         )
 
-        # Merch Evidence & Trinity Advisory
+        # Merch & Trinity
         merch_evidence = extract_merch_evidence(scene_metadata)
-        scene_metadata["merch_refs"] = enforce_canonical_merch_refs(scene_metadata)
         scene_record = merge_scene_sections(scene_record, {"merch_evidence": merch_evidence})
         scene_record = insert_trinity_advisory(scene_record)
-
-        # Marketing Copy
         save_marketing_copy(scene_metadata["scene_uuid"], merch_evidence, passfile_path)
 
-        # Continuity for Chunk 15
+        # Continuity
         scene_record = update_continuity_arcs(scene_record, pf, chunk_index)
 
-        # Schema Validation
+        # Schema validation
         try:
             with open(SCHEMA_PATH) as f:
                 schema = json.load(f)
             jsonschema_validate(instance=scene_record, schema=schema)
         except ValidationError as e:
-            logging.error(f"Schema validation failed in chunk{chunk_index}: {e}")
+            logging.error(f"Schema validation failed for chunk {chunk_index}: {e}")
             raise
 
-        # Update Passfile
+        # Update passfile
         pf[f"chunk_{chunk_index}"] = scene_record
         pf["scene_record"] = scene_record
         update_passfile_scene_record(passfile_path, scene_record)
 
-        # Merch Verification Across Chunks
+        # Merch verification
         verify_merch_refs_across_chunks(pf, scene_metadata)
-
-        logging.info(f"Chunk{chunk_index} executed successfully for scene_uuid: {scene_metadata['scene_uuid']}")
+        logging.info(f"Chunk {chunk_index} processed successfully for scene_uuid {scene_metadata['scene_uuid']}")
 
     return pf
 
 # -----------------------
-# Example Execution
+# Execution
 # -----------------------
 if __name__ == "__main__":
     updated_passfile = pipeline_full()
