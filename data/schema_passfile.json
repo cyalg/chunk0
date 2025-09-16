@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Passfile Scene Record",
+  "type": "object",
+  "required": ["scene_metadata", "scene_text", "beats", "sections", "refs", "scene_uuid", "core_identifier"],
+  "properties": {
+    "scene_metadata": {
+      "type": "object",
+      "required": ["book_code", "part", "episode", "scene", "scene_uuid"],
+      "properties": {
+        "book_code": {"type": "string"},
+        "part": {"type": "string"},
+        "episode": {"type": "string"},
+        "scene": {"type": "string"},
+        "scene_uuid": {"type": "string", "format": "uuid"},
+        "scene_title": {"type": "string"},
+        "concise_summary": {"type": "string"},
+        "merch_refs": {"type": "array", "items": {"type": "string"}},
+        "flags": {"type": "array", "items": {"type": "string"}},
+        "previous_scene": {"type": "string"},
+        "next_scene": {"type": "string"}
+      }
+    },
+    "scene_text": {"type": "string"},
+    "beats": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["snippet", "beat_uuid"],
+        "properties": {
+          "snippet": {"type": "string"},
+          "beat_uuid": {"type": "string", "format": "uuid"}
+        }
+      }
+    },
+    "micro_beats": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["beat_uuid", "text", "keyword_counts"],
+        "properties": {
+          "beat_uuid": {"type": "string"},
+          "text": {"type": "string"},
+          "keyword_counts": {"type": "object", "additionalProperties": {"type": "number"}}
+        }
+      }
+    },
+    "sections": {
+      "type": "object",
+      "required": ["emotional_arc", "erotic_arc", "pacing_strategy_notes", "connected_completion_arcs", "trinity_advisory"],
+      "properties": {
+        "emotional_arc": {"type": "object"},
+        "erotic_arc": {"type": "object"},
+        "pacing_strategy_notes": {"type": "object"},
+        "connected_completion_arcs": {"type": "array", "items": {"type": "string", "format": "uuid"}},
+        "trinity_advisory": {
+          "type": "object",
+          "properties": {
+            "pearls_detected": {"type": "array", "items": {"type": "string"}},
+            "cuffs_detected": {"type": "array", "items": {"type": "string"}},
+            "moan_detected": {"type": "array", "items": {"type": "string"}},
+            "sexual_actions": {"type": "array", "items": {"type": "string"}},
+            "erotic_physiology": {"type": "array", "items": {"type": "string"}},
+            "two_condition_rule_triggered": {"type": "boolean"},
+            "advisory_strength": {"type": "number"}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "refs": {
+      "type": "object",
+      "required": ["scene_uuid", "insert_advisory_refs", "flag_refs"],
+      "properties": {
+        "scene_uuid": {"type": "string", "format": "uuid"},
+        "insert_advisory_refs": {"type": "array", "items": {"type": "string", "format": "uuid"}},
+        "flag_refs": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "cross_references": {
+      "type": "object",
+      "properties": {
+        "previous_scene": {"type": "string"},
+        "next_scene": {"type": "string"}
+      }
+    },
+    "core_identifier": {"type": "string"}
+  },
+  "additionalProperties": false
+}
