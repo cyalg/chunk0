@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
+from jsonschema import validate as jsonschema_validate, ValidationError
 from tests.generate_dummy_chunks import generate_dummy_chunks
 from pipeline.pipeline_full import pipeline_full
 from workflow.workflow_utils import merge_passfile_chunks
+from workflow.workflow_utils_schema import SCHEMA_PATH  # your schema file path
 
 def run_full_pipeline_ci():
     # -----------------------
@@ -26,7 +28,13 @@ def run_full_pipeline_ci():
     print(f"Pipeline processed {len(dummy_chunks)} chunks successfully.")
 
     # -----------------------
-    # 4. Assertions for CI/CD
+    # 4. Load JSON schema
+    # -----------------------
+    with open(SCHEMA_PATH) as f:
+        schema = json.load(f)
+
+    # -----------------------
+    # 5. Assertions for CI/CD + Schema Validation
     # -----------------------
     for idx in range(len(dummy_chunks)):
         chunk_key = f"chunk_{idx}"
@@ -48,10 +56,18 @@ def run_full_pipeline_ci():
         cues = trinity_advisory.get("cues", [])
         assert cues, f"{chunk_key} missing Trinity advisory cues"
 
-    print("✅ All chunks passed CI/CD assertions!")
+        # -----------------------
+        # JSON Schema validation
+        # -----------------------
+        try:
+            jsonschema_validate(instance=chunk, schema=schema)
+        except ValidationError as e:
+            raise AssertionError(f"{chunk_key} failed schema validation: {e.message}")
+
+    print("✅ All chunks passed CI/CD assertions and schema validation!")
 
     # -----------------------
-    # 5. Optional: save final passfile for inspection
+    # 6. Optional: save final passfile for inspection
     # -----------------------
     out_path = Path("dummy_chunks/final_passfile_ci.json")
     out_path.parent.mkdir(exist_ok=True)
