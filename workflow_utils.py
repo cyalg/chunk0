@@ -1,6 +1,6 @@
 # -----------------------
-# workflow_utils v5.10 - Full Production
-# Added: enforce cross-scene continuity + merged Trinity advisory
+# workflow_utils v5.11 - Full Production
+# Added: standardized logging & exception handling
 # -----------------------
 import re, uuid, json, logging, tempfile, shutil
 from pathlib import Path
@@ -70,11 +70,15 @@ def validate_minimal_canonical(scene_records: Union[Dict[str, Any], List[Dict[st
     records = [scene_records] if single_input else scene_records
     validated = {}
     seen_uuids = set()
-    
+
     schema = None
     if schema_path and schema_path.exists():
-        with open(schema_path) as f:
-            schema = json.load(f)
+        try:
+            with open(schema_path) as f:
+                schema = json.load(f)
+        except Exception as e:
+            logging.error(f"Failed to load schema: {e}")
+            raise
 
     for rec in records:
         rec_copy = deepcopy(rec)
@@ -94,49 +98,62 @@ def validate_minimal_canonical(scene_records: Union[Dict[str, Any], List[Dict[st
                 jsonschema_validate(instance=rec_copy, schema=schema)
             except ValidationError as e:
                 logging.error(f"Schema validation failed for scene_uuid {rec_copy['scene_uuid']}: {e}")
-                raise
+                continue  # Skip invalid record instead of raising
 
         validated[rec_copy["scene_uuid"]] = rec_copy
 
-    if single_input:
-        return next(iter(validated.values()), {})
-    return validated if merge else list(validated.values())
+    return next(iter(validated.values()), {}) if single_input else (validated if merge else list(validated.values()))
 
 def read_passfile(path: Optional[str] = None) -> Dict[str, Any]:
     p = Path(path) if path else PASSFILE_PATH
-    if p.exists():
-        with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
+    try:
+        if p.exists():
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logging.error(f"Failed to read passfile {p}: {e}")
     return {}
 
 def write_passfile(data: Dict[str, Any], path: Optional[str] = None, overwrite: bool = True) -> None:
     p = Path(path) if path else PASSFILE_PATH
-    if p.exists() and not overwrite:
-        backup_path = p.with_suffix(".bak")
-        p.rename(backup_path)
-        logging.info(f"Existing passfile backed up to {backup_path}")
-
-    tmp_file = tempfile.NamedTemporaryFile("w", delete=False, dir=p.parent, encoding="utf-8")
+    tmp_file = None
     try:
+        if p.exists() and not overwrite:
+            backup_path = p.with_suffix(".bak")
+            p.rename(backup_path)
+            logging.info(f"Existing passfile backed up to {backup_path}")
+
+        tmp_file = tempfile.NamedTemporaryFile("w", delete=False, dir=p.parent, encoding="utf-8")
         json.dump(data, tmp_file, ensure_ascii=False, indent=2)
         tmp_file.close()
         shutil.move(tmp_file.name, p)
-    except Exception:
-        tmp_file.close()
-        Path(tmp_file.name).unlink(missing_ok=True)
+        logging.info(f"Passfile written successfully to {p}")
+    except Exception as e:
+        logging.error(f"Failed to write passfile {p}: {e}")
+        if tmp_file:
+            tmp_file.close()
+            Path(tmp_file.name).unlink(missing_ok=True)
         raise
 
 def write_passfile_strict(key: str, data: Any, path: Optional[str] = None, overwrite: bool = True) -> None:
-    pf = read_passfile(path)
-    pf[key] = data
-    write_passfile(pf, path, overwrite=overwrite)
+    try:
+        pf = read_passfile(path)
+        pf[key] = data
+        write_passfile(pf, path, overwrite=overwrite)
+    except Exception as e:
+        logging.error(f"Failed to write key '{key}' to passfile: {e}")
+        raise
 
 def merge_passfile_chunks(chunks: List[Dict[str, Any]],
                           path: Optional[str] = None,
                           overwrite_existing: bool = False) -> None:
     pf_path = Path(path) if path else PASSFILE_PATH
     passfile_data = read_passfile(pf_path)
-    validated_chunks = validate_minimal_canonical(chunks, merge=True)
+    try:
+        validated_chunks = validate_minimal_canonical(chunks, merge=True)
+    except Exception as e:
+        logging.error(f"Validation failed during merge: {e}")
+        return
 
     for scene_uuid, chunk in validated_chunks.items():
         if scene_uuid in passfile_data:
@@ -147,10 +164,14 @@ def merge_passfile_chunks(chunks: List[Dict[str, Any]],
                 continue
         passfile_data[scene_uuid] = chunk
 
-    write_passfile(passfile_data, pf_path, overwrite=True)
+    try:
+        write_passfile(passfile_data, pf_path, overwrite=True)
+    except Exception as e:
+        logging.error(f"Failed to write merged passfile: {e}")
+        raise
 
 # -----------------------
-# Micro-Beat & Arc Utilities
+# Micro-Beat, Arc & Continuity Utilities
 # -----------------------
 def assign_micro_beat_uuids(beats: List[Dict[str, Any]], scene_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
     for i, b in enumerate(beats):
@@ -203,10 +224,6 @@ def compute_arcs(beats: List[Dict[str, Any]],
 
 def enforce_continuity(beats: List[Dict[str, Any]],
                        previous_scene_beats: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
-    """
-    Assign micro_beat_index with cross-scene continuity.
-    Update sections.connected_completion_arcs per beat.
-    """
     start_index = 0
     if previous_scene_beats:
         last_prev_index = max(b.get("micro_beat_index", -1) for b in previous_scene_beats)
@@ -215,12 +232,12 @@ def enforce_continuity(beats: List[Dict[str, Any]],
     for i, b in enumerate(beats):
         b["micro_beat_index"] = start_index + i
         sections = b.setdefault("sections", {})
-        sections["connected_completion_arcs"] = True if previous_scene_beats else False
+        sections["connected_completion_arcs"] = bool(previous_scene_beats)
     
     return beats
 
 # -----------------------
-# Trinity Advisory (v5.10: merge & deduplicate)
+# Trinity Advisory
 # -----------------------
 def detect_trinity_cues(scene_text: str, scene_record: dict) -> dict:
     def find_tokens(text, keywords): 
@@ -238,7 +255,6 @@ def insert_trinity_advisory(scene_record: Dict[str, Any]) -> Dict[str, Any]:
     sections = scene_record.setdefault("sections", {})
     refs = scene_record.setdefault("refs", {})
 
-    # Merge with existing advisory
     existing = sections.get("trinity_advisory", {})
 
     def merge_lists(old, new):
@@ -252,7 +268,6 @@ def insert_trinity_advisory(scene_record: Dict[str, Any]) -> Dict[str, Any]:
         "erotic_physiology": merge_lists(existing.get("erotic_physiology"), cues["erophys"])
     }
 
-    # Recompute flags based on merged cues
     total_cues = sum(bool(advisory[key]) for key in ["moan_detected","sexual_actions","erotic_physiology"])
     scene_flags = scene_record.get("scene_metadata", {}).get("flags", [])
     total_cues += sum(f in ["climax","kink","part_end","finale"] for f in scene_flags)
@@ -262,7 +277,6 @@ def insert_trinity_advisory(scene_record: Dict[str, Any]) -> Dict[str, Any]:
 
     sections["trinity_advisory"] = advisory
 
-    # Deduplicate refs
     refs.setdefault("insert_advisory_refs", [])
     scene_uuid = scene_record.get("scene_uuid")
     if scene_uuid and scene_uuid not in refs["insert_advisory_refs"]:
