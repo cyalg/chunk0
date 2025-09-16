@@ -1,6 +1,6 @@
 # -----------------------
-# workflow_utils v5.7 - Full Production
-# Added: atomic merge, configurable duplicate handling
+# workflow_utils v5.8 - Full Production
+# Added: per-chunk threshold overrides + rolling normalization
 # -----------------------
 import re, uuid, json, logging, tempfile, shutil
 from pathlib import Path
@@ -119,7 +119,6 @@ def write_passfile(data: Dict[str, Any], path: Optional[str] = None, overwrite: 
         p.rename(backup_path)
         logging.info(f"Existing passfile backed up to {backup_path}")
 
-    # Atomic write via temp file + rename
     tmp_file = tempfile.NamedTemporaryFile("w", delete=False, dir=p.parent, encoding="utf-8")
     try:
         json.dump(data, tmp_file, ensure_ascii=False, indent=2)
@@ -138,15 +137,8 @@ def write_passfile_strict(key: str, data: Any, path: Optional[str] = None, overw
 def merge_passfile_chunks(chunks: List[Dict[str, Any]],
                           path: Optional[str] = None,
                           overwrite_existing: bool = False) -> None:
-    """
-    Atomically merge multiple scene chunks into a passfile.
-    - Validates each chunk.
-    - Preserves canonical UUIDs and keys.
-    - overwrite_existing=True replaces duplicates; otherwise skips.
-    """
     pf_path = Path(path) if path else PASSFILE_PATH
     passfile_data = read_passfile(pf_path)
-
     validated_chunks = validate_minimal_canonical(chunks, merge=True)
 
     for scene_uuid, chunk in validated_chunks.items():
@@ -176,22 +168,45 @@ def assign_micro_beat_uuids(beats: List[Dict[str, Any]], scene_metadata: Dict[st
             )
     return beats
 
-def compute_arcs(beats: List[Dict[str, Any]], thresholds: Optional[Dict[str,float]] = None) -> List[Dict[str, Any]]:
+def compute_arcs(beats: List[Dict[str, Any]],
+                 thresholds: Optional[Dict[str,float]] = None,
+                 normalize_across: str = "chunk") -> List[Dict[str, Any]]:
+    """
+    Compute dominance, emotion, erotic arcs per beat.
+    thresholds: override default {"dominance":0.5,"emotion":0.5,"erotic":0.5}
+    normalize_across: "chunk" (default) or "rolling"
+    """
     thresholds = thresholds or {"dominance":0.5, "emotion":0.5, "erotic":0.5}
     n = max(1, len(beats))
+    
+    # Rolling normalization: compute total counts across beats
+    total_dom = sum(sum(1 for w in TRINITY_TOKENS["pearls"] if w in (b.get("snippet") or "").lower()) for b in beats)
+    total_emo = sum(sum(1 for w in TRINITY_TOKENS["moan"] if w in (b.get("snippet") or "").lower()) for b in beats)
+    total_erot = sum(sum(1 for w in EROTIC_PHYSIOLOGY if w in (b.get("snippet") or "").lower()) for b in beats)
+    
     arcs = []
     for i, b in enumerate(beats):
-        dom = sum(1 for w in TRINITY_TOKENS["pearls"] if w in (b.get("snippet") or "").lower())
-        emo = sum(1 for w in TRINITY_TOKENS["moan"] if w in (b.get("snippet") or "").lower())
-        erot = sum(1 for w in EROTIC_PHYSIOLOGY if w in (b.get("snippet") or "").lower())
+        dom_count = sum(1 for w in TRINITY_TOKENS["pearls"] if w in (b.get("snippet") or "").lower())
+        emo_count = sum(1 for w in TRINITY_TOKENS["moan"] if w in (b.get("snippet") or "").lower())
+        erot_count = sum(1 for w in EROTIC_PHYSIOLOGY if w in (b.get("snippet") or "").lower())
+        
+        if normalize_across == "rolling":
+            dom_norm = dom_count / max(1, total_dom)
+            emo_norm = emo_count / max(1, total_emo)
+            erot_norm = erot_count / max(1, total_erot)
+        else:
+            dom_norm = dom_count / n
+            emo_norm = emo_count / n
+            erot_norm = erot_count / n
+        
         arcs.append({
             "micro_beat_index": i,
-            "dominance_norm": dom / n,
-            "emotion_norm": emo / n,
-            "erotic_norm": erot / n,
-            "dominance_label": "high" if dom/n > thresholds["dominance"] else "low",
-            "emotion_label": "high" if emo/n > thresholds["emotion"] else "low",
-            "erotic_label": "high" if erot/n > thresholds["erotic"] else "low"
+            "dominance_norm": dom_norm,
+            "emotion_norm": emo_norm,
+            "erotic_norm": erot_norm,
+            "dominance_label": "high" if dom_norm > thresholds["dominance"] else "low",
+            "emotion_label": "high" if emo_norm > thresholds["emotion"] else "low",
+            "erotic_label": "high" if erot_norm > thresholds["erotic"] else "low"
         })
     return arcs
 
