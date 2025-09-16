@@ -4,7 +4,7 @@ from tests.generate_dummy_chunks import generate_dummy_chunks
 from pipeline.pipeline_full import pipeline_full
 from workflow.workflow_utils import merge_passfile_chunks
 
-def run_full_pipeline_test():
+def run_full_pipeline_ci():
     # -----------------------
     # 1. Generate dummy chunks
     # -----------------------
@@ -26,26 +26,41 @@ def run_full_pipeline_test():
     print(f"Pipeline processed {len(dummy_chunks)} chunks successfully.")
 
     # -----------------------
-    # 4. Optional: save final passfile
+    # 4. Assertions for CI/CD
     # -----------------------
-    out_path = Path("dummy_chunks/final_passfile.json")
+    for idx in range(len(dummy_chunks)):
+        chunk_key = f"chunk_{idx}"
+        chunk = updated_passfile.get(chunk_key)
+        assert chunk is not None, f"{chunk_key} missing from passfile"
+
+        # Scene UUID
+        scene_uuid = chunk.get("scene_uuid")
+        assert scene_uuid is not None, f"{chunk_key} missing scene_uuid"
+
+        # Beats and beat UUIDs
+        beats = chunk.get("beats", [])
+        assert len(beats) > 0, f"{chunk_key} has no beats"
+        for beat in beats:
+            assert beat.get("beat_uuid"), f"{chunk_key} contains a beat without beat_uuid"
+
+        # Trinity advisories
+        trinity_advisory = chunk.get("sections", {}).get("trinity_advisory", {})
+        cues = trinity_advisory.get("cues", [])
+        assert cues, f"{chunk_key} missing Trinity advisory cues"
+
+    print("✅ All chunks passed CI/CD assertions!")
+
+    # -----------------------
+    # 5. Optional: save final passfile for inspection
+    # -----------------------
+    out_path = Path("dummy_chunks/final_passfile_ci.json")
     out_path.parent.mkdir(exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(updated_passfile, f, indent=2)
     print(f"Saved final passfile to {out_path}")
 
-    # -----------------------
-    # 5. Quick verification
-    # -----------------------
-    for idx in range(len(dummy_chunks)):
-        chunk_key = f"chunk_{idx}"
-        scene_uuid = updated_passfile[chunk_key]["scene_uuid"]
-        beats_count = len(updated_passfile[chunk_key]["beats"])
-        trinity_cues = updated_passfile[chunk_key]["sections"].get("trinity_advisory", {}).get("cues", [])
-        print(f"{chunk_key}: scene_uuid={scene_uuid}, beats={beats_count}, trinity_cues={trinity_cues}")
-
 # -----------------------
 # Execute
 # -----------------------
 if __name__ == "__main__":
-    run_full_pipeline_test()
+    run_full_pipeline_ci()
