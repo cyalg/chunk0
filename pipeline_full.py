@@ -1,12 +1,10 @@
 # ================================
 # pipeline_full.py
-# Sequential Chunk Integration (0 → 14)
-# Deterministic Scene Ingestion + Micro-Beats/Arcs + Merch Evidence + Trinity Advisory
-# Scene Metadata Normalization + Inflection Points Cross-Chunk Continuity
-# Arc computation thresholds configurable per scene/episode with optional smoothing
-# Merch evidence validated across chunks & canonical enforcement
-# Duplicate/Missing Merch Verification Layer
-# Schema validation performed after each chunk
+# Sequential Chunk Integration (0 → 15)
+# Continuity Engine + Deterministic Scene Ingestion + Micro-Beats/Arcs
+# Merch Evidence & Trinity Advisory
+# Schema validation per chunk
+# Merch duplicate/missing verification
 # ================================
 
 import json
@@ -34,12 +32,12 @@ from workflow_utils_schema import SCHEMA_PATH
 from jsonschema import validate as jsonschema_validate, ValidationError
 
 # -----------------------
-# Logging Config
+# Logging
 # -----------------------
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 # -----------------------
-# Constants / Config
+# Constants
 # -----------------------
 PASSFILE_PATH = Path("passfile.json")
 DEFAULT_CHUNK_SIZE = 5
@@ -165,7 +163,8 @@ def package_scene_record(scene_text: str, scene_metadata: Dict[str, Any], arcs: 
         "sections": {
             "emotional_arc": arcs["emotional_arc"],
             "erotic_arc": arcs["erotic_arc"],
-            "pacing_strategy_notes": arcs["pacing_strategy_notes"]
+            "pacing_strategy_notes": arcs["pacing_strategy_notes"],
+            "connected_completion_arcs": []  # continuity arcs placeholder
         },
         "cross_references": {
             "previous_scene": scene_metadata.get("previous_scene"),
@@ -179,7 +178,7 @@ def package_scene_record(scene_text: str, scene_metadata: Dict[str, Any], arcs: 
 # -----------------------
 def verify_merch_refs_across_chunks(passfile: Dict[str, Any], scene_metadata: Dict[str, Any]):
     all_refs = []
-    for idx in range(15):
+    for idx in range(16):  # include chunk 15
         chunk = passfile.get(f"chunk_{idx}", {})
         refs = chunk.get("scene_metadata", {}).get("merch_refs", [])
         all_refs.extend(refs)
@@ -192,9 +191,25 @@ def verify_merch_refs_across_chunks(passfile: Dict[str, Any], scene_metadata: Di
     return duplicates, missing
 
 # -----------------------
+# Continuity Integration for Chunk 15
+# -----------------------
+def update_continuity_arcs(scene_record: Dict[str, Any], pf: Dict[str, Any], chunk_index: int):
+    connected_arcs = []
+    # Gather connected_completion_arcs from prior chunks
+    for idx in range(chunk_index):
+        prior_chunk = pf.get(f"chunk_{idx}", {})
+        arcs = prior_chunk.get("sections", {}).get("connected_completion_arcs", [])
+        connected_arcs.extend(arcs)
+    # Add current chunk UUID to continuity
+    connected_arcs.append(scene_record["scene_uuid"])
+    scene_record["sections"]["connected_completion_arcs"] = connected_arcs
+    logging.info(f"Updated connected_completion_arcs for chunk_{chunk_index}: {connected_arcs}")
+    return scene_record
+
+# -----------------------
 # Unified Full Pipeline
 # -----------------------
-def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = range(0, 15),
+def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = range(0, 16),
                   previous_scene_record: Optional[Dict[str, Any]] = None,
                   next_scene_record: Optional[Dict[str, Any]] = None,
                   arc_thresholds: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
@@ -237,7 +252,7 @@ def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = 
             next_scene_record=next_scene_record
         )
 
-        # Merch Evidence & Trinity Advisory (cross-chunk validated)
+        # Merch Evidence & Trinity Advisory
         merch_evidence = extract_merch_evidence(scene_metadata)
         scene_metadata["merch_refs"] = enforce_canonical_merch_refs(scene_metadata)
         scene_record = merge_scene_sections(scene_record, {"merch_evidence": merch_evidence})
@@ -246,7 +261,10 @@ def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = 
         # Marketing Copy
         save_marketing_copy(scene_metadata["scene_uuid"], merch_evidence, passfile_path)
 
-        # Schema Validation AFTER EACH CHUNK
+        # Continuity for Chunk 15
+        scene_record = update_continuity_arcs(scene_record, pf, chunk_index)
+
+        # Schema Validation
         try:
             with open(SCHEMA_PATH) as f:
                 schema = json.load(f)
@@ -255,7 +273,7 @@ def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = 
             logging.error(f"Schema validation failed in chunk{chunk_index}: {e}")
             raise
 
-        # Update Passfile Safely
+        # Update Passfile
         pf[f"chunk_{chunk_index}"] = scene_record
         pf["scene_record"] = scene_record
         update_passfile_scene_record(passfile_path, scene_record)
