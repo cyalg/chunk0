@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+import json
 from copy import deepcopy
 from workflow_utils import (
     deterministic_uuid,
@@ -6,8 +8,9 @@ from workflow_utils import (
     merge_passfile_chunks,
     assign_micro_beat_uuids,
     enforce_continuity,
-    insert_trinity_advisory,
+    insert_trinity_advisory
 )
+from pipeline_full import pipeline_full
 
 class TestWorkflowUtils(unittest.TestCase):
 
@@ -37,6 +40,11 @@ class TestWorkflowUtils(unittest.TestCase):
             {"snippet": "pulse quickens", "type": "micro_beat"}
         ]
 
+        # Temporary passfile for end-to-end tests
+        self.tmp_passfile = tempfile.NamedTemporaryFile(delete=False)
+        with open(self.tmp_passfile.name, 'w') as f:
+            json.dump({"scene_metadata": self.scene_metadata, "scene_text": self.scene_record["scene_text"]}, f)
+
     # -----------------------
     # deterministic_uuid
     # -----------------------
@@ -55,21 +63,22 @@ class TestWorkflowUtils(unittest.TestCase):
     # -----------------------
     def test_validate_minimal_canonical_valid(self):
         validated = validate_minimal_canonical([self.scene_record], merge=True)
-        self.assertIn(self.scene_record["scene_metadata"]["scene"], [v["scene_metadata"]["scene"] for v in validated.values()])
+        self.assertIn(self.scene_record["scene_metadata"]["scene"],
+                      [v["scene_metadata"]["scene"] for v in validated.values()])
 
     # -----------------------
     # merge_passfile_chunks
     # -----------------------
     def test_merge_passfile_chunks_duplicate_behavior(self):
-        import tempfile, json
-        tmpfile = tempfile.NamedTemporaryFile(delete=False)
-        tmpfile.close()
+        import os
+        tmpfile_path = self.tmp_passfile.name
         chunk1 = deepcopy(self.scene_record)
         chunk2 = deepcopy(self.scene_record)  # duplicate
-        merge_passfile_chunks([chunk1, chunk2], path=tmpfile.name, overwrite_existing=False)
-        with open(tmpfile.name) as f:
+        merge_passfile_chunks([chunk1, chunk2], path=tmpfile_path, overwrite_existing=False)
+        with open(tmpfile_path) as f:
             data = json.load(f)
         self.assertEqual(len(data), 1)
+        os.unlink(tmpfile_path)
 
     # -----------------------
     # assign_micro_beat_uuids
@@ -98,6 +107,20 @@ class TestWorkflowUtils(unittest.TestCase):
         self.assertIn("pearl", advisory["pearls_detected"])
         self.assertIn("cuff", advisory["cuffs_detected"])
         self.assertIn("moan", advisory["moan_detected"])
+
+    # -----------------------
+    # pipeline_full integration
+    # -----------------------
+    def test_pipeline_full_end_to_end(self):
+        pf = pipeline_full(passfile_path=self.tmp_passfile.name, chunk_range=range(1))
+        scene_record = pf["scene_record"]
+        # Check micro-beat continuity & arcs exist
+        self.assertIn("micro_beats", scene_record)
+        self.assertIn("emotional_arc", scene_record["sections"])
+        self.assertIn("erotic_arc", scene_record["sections"])
+        # Check trinity advisory attached
+        self.assertIn("trinity_advisory", scene_record["sections"])
+        self.assertTrue(scene_record["sections"]["trinity_advisory"]["two_condition_rule_triggered"])
 
 if __name__ == "__main__":
     unittest.main()
