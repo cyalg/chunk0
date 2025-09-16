@@ -1,6 +1,6 @@
 # -----------------------
-# workflow_utils v5.5 - Full Production
-# Added: Multi-chunk support in validate_minimal_canonical
+# workflow_utils v5.6 - Full Production
+# Added: merge_passfile_chunks for atomic multi-chunk merges
 # -----------------------
 import re, uuid, json, logging
 from pathlib import Path
@@ -8,9 +8,6 @@ from copy import deepcopy
 from typing import List, Dict, Any, Optional, Union
 from jsonschema import validate as jsonschema_validate, ValidationError
 
-# -----------------------
-# Logging Config
-# -----------------------
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 # -----------------------
@@ -64,20 +61,14 @@ def generate_core_identifier(scene_metadata: Dict[str, Any]) -> str:
     return f"{scene_metadata.get('book_code','nothing')}_P{scene_metadata.get('part','1')}_E{scene_metadata.get('episode','1')}_S{scene_metadata.get('scene','1')}"
 
 # -----------------------
-# Canonical Validator (v5.5) - Multi-chunk Support
+# Canonical Validator
 # -----------------------
 def validate_minimal_canonical(scene_records: Union[Dict[str, Any], List[Dict[str, Any]]],
                                schema_path: Optional[Path] = SCHEMA_PATH,
                                merge: bool = False) -> Union[Dict[str, Any], Dict[str, Dict[str, Any]]]:
-    """
-    Validate single or multiple scenes against canonical schema.
-    - merge=True will return a dict keyed by scene_uuid.
-    - Duplicates detected will log warnings and be skipped in merge.
-    """
     single_input = isinstance(scene_records, dict)
     records = [scene_records] if single_input else scene_records
     validated = {}
-    
     seen_uuids = set()
     
     if schema_path and schema_path.exists():
@@ -135,6 +126,26 @@ def write_passfile_strict(key: str, data: Any, path: Optional[str] = None, overw
     pf = read_passfile(path)
     pf[key] = data
     write_passfile(pf, path, overwrite=overwrite)
+
+def merge_passfile_chunks(chunks: List[Dict[str, Any]], path: Optional[str] = None, overwrite: bool = True) -> None:
+    """
+    Atomically merge multiple scene chunks into a passfile.
+    - Validates each chunk.
+    - Preserves canonical UUIDs and keys.
+    - Skips duplicates with a warning.
+    """
+    pf_path = Path(path) if path else PASSFILE_PATH
+    passfile_data = read_passfile(pf_path)
+
+    validated_chunks = validate_minimal_canonical(chunks, merge=True)
+
+    for scene_uuid, chunk in validated_chunks.items():
+        if scene_uuid in passfile_data:
+            logging.warning(f"Scene UUID {scene_uuid} already exists in passfile. Skipping merge for this chunk.")
+            continue
+        passfile_data[scene_uuid] = chunk
+
+    write_passfile(passfile_data, pf_path, overwrite=overwrite)
 
 # -----------------------
 # Micro-Beat & Arc Utilities
