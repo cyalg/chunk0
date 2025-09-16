@@ -1,6 +1,6 @@
 # -----------------------
-# workflow_utils v5.11 - Full Production
-# Added: standardized logging & exception handling
+# workflow_utils v5.12 - Full Production
+# Added: optional strict validation, test scaffolding notes
 # -----------------------
 import re, uuid, json, logging, tempfile, shutil
 from pathlib import Path
@@ -65,7 +65,8 @@ def generate_core_identifier(scene_metadata: Dict[str, Any]) -> str:
 # -----------------------
 def validate_minimal_canonical(scene_records: Union[Dict[str, Any], List[Dict[str, Any]]],
                                schema_path: Optional[Path] = SCHEMA_PATH,
-                               merge: bool = False) -> Union[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+                               merge: bool = False,
+                               raise_on_invalid: bool = False) -> Union[Dict[str, Any], Dict[str, Dict[str, Any]]]:
     single_input = isinstance(scene_records, dict)
     records = [scene_records] if single_input else scene_records
     validated = {}
@@ -78,7 +79,8 @@ def validate_minimal_canonical(scene_records: Union[Dict[str, Any], List[Dict[st
                 schema = json.load(f)
         except Exception as e:
             logging.error(f"Failed to load schema: {e}")
-            raise
+            if raise_on_invalid:
+                raise
 
     for rec in records:
         rec_copy = deepcopy(rec)
@@ -98,7 +100,9 @@ def validate_minimal_canonical(scene_records: Union[Dict[str, Any], List[Dict[st
                 jsonschema_validate(instance=rec_copy, schema=schema)
             except ValidationError as e:
                 logging.error(f"Schema validation failed for scene_uuid {rec_copy['scene_uuid']}: {e}")
-                continue  # Skip invalid record instead of raising
+                if raise_on_invalid:
+                    raise
+                continue
 
         validated[rec_copy["scene_uuid"]] = rec_copy
 
@@ -283,3 +287,16 @@ def insert_trinity_advisory(scene_record: Dict[str, Any]) -> Dict[str, Any]:
         refs["insert_advisory_refs"].append(scene_uuid)
 
     return scene_record
+
+# -----------------------
+# TEST SCAFFOLDING (to be implemented in tests/test_workflow_utils.py)
+# -----------------------
+"""
+Unit tests should cover:
+1. deterministic_uuid() -> repeatability and uniqueness
+2. validate_minimal_canonical() -> valid/invalid schema, raise_on_invalid behavior
+3. merge_passfile_chunks() -> duplicates, overwrite_existing, continuity
+4. assign_micro_beat_uuids() -> correct indexing and UUID assignment
+5. enforce_continuity() -> cross-scene index continuity
+6. insert_trinity_advisory() -> merging, cue detection, two_condition_rule_triggered
+"""
