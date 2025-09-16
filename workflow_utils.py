@@ -1,12 +1,11 @@
 # -----------------------
-# workflow_utils v5.4 - Full Production
-# Added: Extended deterministic_uuid for motifs/props/editorial notes
-# Supports array auto-indexing, Micro-Beat UUIDs, Arc & Continuity
+# workflow_utils v5.5 - Full Production
+# Added: Multi-chunk support in validate_minimal_canonical
 # -----------------------
 import re, uuid, json, logging
 from pathlib import Path
 from copy import deepcopy
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from jsonschema import validate as jsonschema_validate, ValidationError
 
 # -----------------------
@@ -47,16 +46,9 @@ def deterministic_uuid(book_code: str,
                        object_type: str,
                        array_index: Optional[int] = None,
                        auto_index: Optional[int] = None) -> str:
-    """
-    Deterministic UUID for beats, motifs, props, editorial notes, micro-beats, etc.
-    array_index: index within a list for uniqueness
-    auto_index: optional override index if object is part of a sequence
-    """
     key = f"{_normalize_key(book_code)}|P{_normalize_key(str(part))}|E{_normalize_key(str(episode))}|S{_normalize_key(str(scene))}|{_normalize_key(object_type)}"
-    if array_index is not None:
-        key += f"|A{array_index}"
-    if auto_index is not None:
-        key += f"|IDX{auto_index}"
+    if array_index is not None: key += f"|A{array_index}"
+    if auto_index is not None: key += f"|IDX{auto_index}"
     return str(uuid.uuid5(NAMESPACE, key))
 
 def generate_scene_uuid_from_metadata(scene_metadata: Dict[str, Any]) -> str:
@@ -72,25 +64,53 @@ def generate_core_identifier(scene_metadata: Dict[str, Any]) -> str:
     return f"{scene_metadata.get('book_code','nothing')}_P{scene_metadata.get('part','1')}_E{scene_metadata.get('episode','1')}_S{scene_metadata.get('scene','1')}"
 
 # -----------------------
-# Canonical Validator
+# Canonical Validator (v5.5) - Multi-chunk Support
 # -----------------------
-def validate_minimal_canonical(scene_record: Dict[str, Any], schema_path: Optional[Path] = SCHEMA_PATH) -> Dict[str, Any]:
-    scene_record = deepcopy(scene_record)
-    scene_metadata = scene_record.get("scene_metadata", {})
-    scene_record.setdefault("scene_uuid", generate_scene_uuid_from_metadata(scene_metadata))
-    scene_record.setdefault("core_identifier", scene_metadata.get("core_identifier", "unknown_core"))
-    scene_record.setdefault("refs", {"flag_refs": [], "insert_advisory_refs": [], "feedback_summary_ref": []})
-    scene_record.setdefault("folder_map", {})
-
+def validate_minimal_canonical(scene_records: Union[Dict[str, Any], List[Dict[str, Any]]],
+                               schema_path: Optional[Path] = SCHEMA_PATH,
+                               merge: bool = False) -> Union[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+    """
+    Validate single or multiple scenes against canonical schema.
+    - merge=True will return a dict keyed by scene_uuid.
+    - Duplicates detected will log warnings and be skipped in merge.
+    """
+    single_input = isinstance(scene_records, dict)
+    records = [scene_records] if single_input else scene_records
+    validated = {}
+    
+    seen_uuids = set()
+    
     if schema_path and schema_path.exists():
         with open(schema_path) as f:
             schema = json.load(f)
-        try:
-            jsonschema_validate(instance=scene_record, schema=schema)
-        except ValidationError as e:
-            logging.error(f"Schema validation failed: {e}")
-            raise
-    return scene_record
+    else:
+        schema = None
+
+    for rec in records:
+        rec_copy = deepcopy(rec)
+        metadata = rec_copy.get("scene_metadata", {})
+        rec_copy.setdefault("scene_uuid", generate_scene_uuid_from_metadata(metadata))
+        rec_copy.setdefault("core_identifier", metadata.get("core_identifier", "unknown_core"))
+        rec_copy.setdefault("refs", {"flag_refs": [], "insert_advisory_refs": [], "feedback_summary_ref": []})
+        rec_copy.setdefault("folder_map", {})
+
+        if rec_copy["scene_uuid"] in seen_uuids:
+            logging.warning(f"Duplicate scene_uuid detected: {rec_copy['scene_uuid']}. Skipping duplicate.")
+            continue
+        seen_uuids.add(rec_copy["scene_uuid"])
+
+        if schema:
+            try:
+                jsonschema_validate(instance=rec_copy, schema=schema)
+            except ValidationError as e:
+                logging.error(f"Schema validation failed for scene_uuid {rec_copy['scene_uuid']}: {e}")
+                raise
+
+        validated[rec_copy["scene_uuid"]] = rec_copy
+
+    if single_input:
+        return next(iter(validated.values()), {})
+    return validated if merge else list(validated.values())
 
 # -----------------------
 # Passfile I/O
