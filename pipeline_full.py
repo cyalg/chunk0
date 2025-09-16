@@ -2,6 +2,7 @@
 # pipeline_full.py
 # Sequential Chunk Integration (0 → 14)
 # Deterministic Scene Ingestion + Micro-Beats/Arcs + Merch Evidence + Trinity Advisory
+# Scene Metadata Normalization Added
 # ================================
 
 import json
@@ -40,8 +41,20 @@ DEFAULT_CHUNK_SIZE = 5
 KEYWORDS = ["dominance", "submission", "tension", "release", "erotic", "gaze", "posture", "voice", "control"]
 
 # -----------------------
-# Helpers (from chunk0)
+# Helpers
 # -----------------------
+def normalize_scene_metadata(scene_metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Enforce canonical defaults and fill missing fields.
+    Ensures deterministic UUID regeneration if core fields change.
+    """
+    defaults = {"book_code": "UNK", "part": "1", "episode": "1", "scene": "1"}
+    for k, v in defaults.items():
+        scene_metadata.setdefault(k, v)
+    # Regenerate scene_uuid if missing or invalid
+    scene_metadata["scene_uuid"] = safe_generate_scene_uuid(scene_metadata)
+    return scene_metadata
+
 def safe_generate_scene_uuid(scene_metadata: Dict[str, Any]) -> str:
     scene_uuid = scene_metadata.get("scene_uuid")
     try:
@@ -50,8 +63,6 @@ def safe_generate_scene_uuid(scene_metadata: Dict[str, Any]) -> str:
             return scene_uuid
     except ValueError:
         logging.warning("Invalid scene_uuid detected; regenerating.")
-    for k in ["book_code", "part", "episode", "scene"]:
-        scene_metadata.setdefault(k, "1")
     new_uuid = generate_scene_uuid_from_metadata(scene_metadata)
     logging.info(f"Generated new scene_uuid: {new_uuid}")
     return new_uuid
@@ -60,7 +71,7 @@ def assign_beat_uuids_stable(beat_list: List[Dict[str, Any]], scene_metadata: Di
     for idx, beat in enumerate(beat_list):
         if not beat.get("beat_uuid"):
             beat["beat_uuid"] = deterministic_uuid(
-                book_code=scene_metadata.get("book_code", "nothing"),
+                book_code=scene_metadata.get("book_code", "UNK"),
                 part=scene_metadata.get("part", "1"),
                 episode=scene_metadata.get("episode", "1"),
                 scene=scene_metadata.get("scene", "1"),
@@ -108,7 +119,7 @@ def identify_inflection_points_weighted(micro_beats: List[Dict[str, Any]]) -> Li
     return points
 
 def package_scene_record(scene_text: str, scene_metadata: Dict[str, Any], arcs: Dict[str, Any], beats: List[Dict[str, Any]]) -> Dict[str, Any]:
-    core_id = f"{scene_metadata.get('book_code','nothing')}_P{scene_metadata.get('part','1')}_E{scene_metadata.get('episode','1')}_S{scene_metadata.get('scene','1')}"
+    core_id = f"{scene_metadata.get('book_code','UNK')}_P{scene_metadata.get('part','1')}_E{scene_metadata.get('episode','1')}_S{scene_metadata.get('scene','1')}"
     return {
         "core_identifier": core_id,
         "scene_uuid": scene_metadata["scene_uuid"],
@@ -137,20 +148,22 @@ def package_scene_record(scene_text: str, scene_metadata: Dict[str, Any], arcs: 
 # -----------------------
 def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = range(0, 15)) -> Dict[str, Any]:
     """
-    Sequentially integrate pipeline_chunk0 → pipeline_chunk14
+    Sequentially integrate pipeline_chunk0 → pipeline_chunk14 with normalized scene metadata.
     """
     pf = read_passfile(passfile_path)
 
     for chunk_index in chunk_range:
         logging.info(f"Processing pipeline_chunk{chunk_index}...")
-        
+
         scene_text = pf.get("scene_text", "")
         scene_metadata = pf.get("scene_metadata", {})
 
-        # UUID and Merch Canonical Enforcement
-        scene_metadata["scene_uuid"] = safe_generate_scene_uuid(scene_metadata)
-        pf["refs"] = enforce_canonical_merch_refs(scene_metadata)
+        # -----------------------
+        # Normalize Scene Metadata
+        # -----------------------
+        scene_metadata = normalize_scene_metadata(scene_metadata)
         pf["scene_metadata"] = scene_metadata
+        pf["refs"] = enforce_canonical_merch_refs(scene_metadata)
 
         # Initialize Defaults
         pf.setdefault("beat_list", [])
