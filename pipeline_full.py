@@ -4,6 +4,7 @@
 # Deterministic Scene Ingestion + Micro-Beats/Arcs + Merch Evidence + Trinity Advisory
 # Scene Metadata Normalization + Inflection Points Cross-Chunk Continuity
 # Arc computation thresholds configurable per scene/episode with optional smoothing
+# Merch evidence validated across chunks & canonical enforcement
 # ================================
 
 import json
@@ -42,10 +43,10 @@ PASSFILE_PATH = Path("passfile.json")
 DEFAULT_CHUNK_SIZE = 5
 KEYWORDS = ["dominance", "submission", "tension", "release", "erotic", "gaze", "posture", "voice", "control"]
 DEFAULT_ARC_THRESHOLDS = {
-    "erotic_peak": 0.3,  # threshold for peak labeling
+    "erotic_peak": 0.3,
     "fast_pacing_word_count": 30
 }
-ROLLING_AVG_WINDOW = 3  # for smoothing arcs
+ROLLING_AVG_WINDOW = 3
 
 # -----------------------
 # Helpers
@@ -116,7 +117,6 @@ def compute_arcs_adaptive(micro_beats: List[Dict[str, Any]],
         erotic_values.append(normalized.get("erotic", 0))
         pacing_notes[beat_id] = "fast" if len(beat["text"].split()) > fast_word_count else "steady"
 
-    # Apply rolling average smoothing to erotic_arc
     for i, beat in enumerate(micro_beats):
         window_vals = erotic_values[max(0, i - rolling_window + 1): i + 1]
         smoothed = mean(window_vals)
@@ -142,7 +142,6 @@ def propagate_inflection_points_across_chunks(scene_record: Dict[str, Any], prev
         inflection_points = previous_scene_record.get("inflection_points", []) + inflection_points
     if next_scene_record:
         inflection_points += next_scene_record.get("inflection_points", [])
-    # Deduplicate while preserving order
     seen = set()
     continuity_points = []
     for p in inflection_points:
@@ -183,6 +182,7 @@ def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = 
                   previous_scene_record: Optional[Dict[str, Any]] = None,
                   next_scene_record: Optional[Dict[str, Any]] = None,
                   arc_thresholds: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+
     pf = read_passfile(passfile_path)
 
     for chunk_index in chunk_range:
@@ -194,7 +194,9 @@ def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = 
         # Normalize Scene Metadata
         scene_metadata = normalize_scene_metadata(scene_metadata)
         pf["scene_metadata"] = scene_metadata
-        pf["refs"] = enforce_canonical_merch_refs(scene_metadata)
+
+        # Enforce canonical merch refs early
+        scene_metadata["merch_refs"] = enforce_canonical_merch_refs(scene_metadata)
 
         # Initialize Defaults
         pf.setdefault("beat_list", [])
@@ -219,12 +221,13 @@ def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = 
             next_scene_record=next_scene_record
         )
 
-        # Merch Evidence & Trinity Advisory
+        # Merch Evidence & Trinity Advisory (cross-chunk validated)
         merch_evidence = extract_merch_evidence(scene_metadata)
+        scene_metadata["merch_refs"] = enforce_canonical_merch_refs(scene_metadata)
         scene_record = merge_scene_sections(scene_record, {"merch_evidence": merch_evidence})
         scene_record = insert_trinity_advisory(scene_record)
 
-        # Marketing Copy
+        # Marketing Copy (ensure canonical refs)
         save_marketing_copy(scene_metadata["scene_uuid"], merch_evidence, passfile_path)
 
         # Schema Validation
