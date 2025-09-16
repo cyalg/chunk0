@@ -1,49 +1,102 @@
+import uuid
 import random
+from hashlib import sha1
 
-def generate_dummy_chunks(num_chunks: int = 14):
-    """
-    Generate dummy scene chunks for testing merge and pipeline utilities.
-    Each chunk includes scene_metadata, scene_text with Trinity keywords, and beats.
-    """
-    TRINITY_KEYWORDS = {
-        "pearls": ["pearl", "necklace", "jewel", "collar", "bead"],
-        "cuffs": ["cuff", "leather", "bound", "tie", "wrist"],
-        "moan": ["moan", "gasp", "sigh", "pant", "whimper"]
-    }
+# -----------------------
+# Deterministic UUID helper
+# -----------------------
+def deterministic_uuid(*args) -> str:
+    """Generate a UUID based on a deterministic hash of input args."""
+    h = sha1("::".join(map(str, args)).encode("utf-8")).hexdigest()
+    return str(uuid.UUID(h[:32]))
 
+# -----------------------
+# Trinity keywords for micro-beats
+# -----------------------
+TRINITY_KEYWORDS = {
+    "pearls": ["pearl", "necklace", "jewel", "collar", "bead"],
+    "cuffs": ["cuff", "leather", "bound", "tie", "wrist"],
+    "moan": ["moan", "gasp", "sigh", "pant", "whimper"]
+}
+
+# -----------------------
+# Split text into chunks
+# -----------------------
+def split_text_to_chunks(text: str, num_chunks: int = 14) -> list[str]:
+    words = text.split()
+    chunk_size = max(1, len(words) // num_chunks)
+    return [" ".join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)][:num_chunks]
+
+# -----------------------
+# Generate beats for a chunk
+# -----------------------
+def generate_beats(chunk_text: str, scene_metadata: dict) -> list[dict]:
+    words = chunk_text.split()
+    beats = []
+    for i in range(0, len(words), max(5, len(words)//3)):
+        snippet_words = words[i:i+5]
+        snippet = " ".join(snippet_words)
+        # Randomly attach a Trinity keyword
+        kw_type = random.choice(list(TRINITY_KEYWORDS.keys()))
+        kw = random.choice(TRINITY_KEYWORDS[kw_type])
+        snippet += f" [{kw}]"
+        beat_uuid = deterministic_uuid(scene_metadata["book_code"], scene_metadata["part"],
+                                       scene_metadata["episode"], scene_metadata["scene"], i)
+        beats.append({"snippet": snippet, "beat_uuid": beat_uuid})
+    return beats
+
+# -----------------------
+# Generate Chunk Dicts
+# -----------------------
+def generate_chunks_from_text(text: str, book_code="TEST", part="1", episode="1") -> list[dict]:
+    chunk_texts = split_text_to_chunks(text, num_chunks=14)
     chunks = []
-    for i in range(1, num_chunks + 1):
-        part = str((i - 1) // 3 + 1)        # Example: 4 parts
-        episode = str((i - 1) % 3 + 1)      # Example: 3 episodes per part
-        scene = str(i)
-        
-        # Create 2-3 micro-beats per chunk with random Trinity keywords
-        beats = []
-        for j in range(1, random.randint(2, 4)):
-            keyword_type = random.choice(list(TRINITY_KEYWORDS.keys()))
-            keyword = random.choice(TRINITY_KEYWORDS[keyword_type])
-            snippet = f"Micro-beat {i}-{j}: {keyword} appears and triggers action."
-            beats.append({"snippet": snippet})
-
-        # Scene text concatenates beat snippets
-        scene_text = " ".join(b["snippet"] for b in beats)
-
+    for idx, chunk_text in enumerate(chunk_texts, start=1):
+        scene = str(idx)
+        scene_metadata = {
+            "book_code": book_code,
+            "part": part,
+            "episode": episode,
+            "scene": scene,
+            "scene_uuid": deterministic_uuid(book_code, part, episode, scene),
+            "scene_title": f"Scene {scene}",
+            "concise_summary": f"Auto-generated summary for scene {scene}",
+            "merch_refs": [],
+            "flags": [],
+            "previous_scene": str(idx-1) if idx > 1 else None,
+            "next_scene": str(idx+1) if idx < 14 else None
+        }
+        beats = generate_beats(chunk_text, scene_metadata)
         chunk = {
-            "scene_metadata": {
-                "book_code": "TESTBOOK",
-                "part": part,
-                "episode": episode,
-                "scene": scene
+            "scene_metadata": scene_metadata,
+            "scene_text": chunk_text,
+            "beats": beats,
+            "micro_beats": [{"beat_uuid": b["beat_uuid"], "text": b["snippet"], "keyword_counts": {k: b["snippet"].count(k) for k in TRINITY_KEYWORDS}} for b in beats],
+            "sections": {
+                "emotional_arc": {},
+                "erotic_arc": {},
+                "pacing_strategy_notes": {},
+                "connected_completion_arcs": [],
+                "trinity_advisory": {
+                    "pearls_detected": [],
+                    "cuffs_detected": [],
+                    "moan_detected": [],
+                    "sexual_actions": [],
+                    "erotic_physiology": [],
+                    "two_condition_rule_triggered": False,
+                    "advisory_strength": 0
+                }
             },
-            "scene_text": scene_text,
-            "beats": beats
+            "refs": {
+                "scene_uuid": scene_metadata["scene_uuid"],
+                "insert_advisory_refs": [],
+                "flag_refs": []
+            },
+            "cross_references": {
+                "previous_scene": scene_metadata["previous_scene"],
+                "next_scene": scene_metadata["next_scene"]
+            },
+            "core_identifier": f"{book_code}_P{part}_E{episode}_S{scene}"
         }
         chunks.append(chunk)
-
     return chunks
-
-# Example usage
-if __name__ == "__main__":
-    dummy_chunks = generate_dummy_chunks()
-    import json
-    print(json.dumps(dummy_chunks, indent=2))
