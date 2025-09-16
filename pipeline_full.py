@@ -5,6 +5,8 @@
 # Scene Metadata Normalization + Inflection Points Cross-Chunk Continuity
 # Arc computation thresholds configurable per scene/episode with optional smoothing
 # Merch evidence validated across chunks & canonical enforcement
+# Duplicate/Missing Merch Verification Layer
+# Schema validation performed after each chunk
 # ================================
 
 import json
@@ -42,10 +44,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 PASSFILE_PATH = Path("passfile.json")
 DEFAULT_CHUNK_SIZE = 5
 KEYWORDS = ["dominance", "submission", "tension", "release", "erotic", "gaze", "posture", "voice", "control"]
-DEFAULT_ARC_THRESHOLDS = {
-    "erotic_peak": 0.3,
-    "fast_pacing_word_count": 30
-}
+DEFAULT_ARC_THRESHOLDS = {"erotic_peak": 0.3, "fast_pacing_word_count": 30}
 ROLLING_AVG_WINDOW = 3
 
 # -----------------------
@@ -176,6 +175,23 @@ def package_scene_record(scene_text: str, scene_metadata: Dict[str, Any], arcs: 
     }
 
 # -----------------------
+# Merch Reference Verification
+# -----------------------
+def verify_merch_refs_across_chunks(passfile: Dict[str, Any], scene_metadata: Dict[str, Any]):
+    all_refs = []
+    for idx in range(15):
+        chunk = passfile.get(f"chunk_{idx}", {})
+        refs = chunk.get("scene_metadata", {}).get("merch_refs", [])
+        all_refs.extend(refs)
+    duplicates = set([r for r in all_refs if all_refs.count(r) > 1])
+    missing = [r for r in all_refs if not r]
+    if duplicates:
+        logging.warning(f"Duplicate merch references detected across chunks: {duplicates}")
+    if missing:
+        logging.warning(f"Missing merch references detected across chunks: {missing}")
+    return duplicates, missing
+
+# -----------------------
 # Unified Full Pipeline
 # -----------------------
 def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = range(0, 15),
@@ -227,10 +243,10 @@ def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = 
         scene_record = merge_scene_sections(scene_record, {"merch_evidence": merch_evidence})
         scene_record = insert_trinity_advisory(scene_record)
 
-        # Marketing Copy (ensure canonical refs)
+        # Marketing Copy
         save_marketing_copy(scene_metadata["scene_uuid"], merch_evidence, passfile_path)
 
-        # Schema Validation
+        # Schema Validation AFTER EACH CHUNK
         try:
             with open(SCHEMA_PATH) as f:
                 schema = json.load(f)
@@ -240,8 +256,12 @@ def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = 
             raise
 
         # Update Passfile Safely
+        pf[f"chunk_{chunk_index}"] = scene_record
         pf["scene_record"] = scene_record
         update_passfile_scene_record(passfile_path, scene_record)
+
+        # Merch Verification Across Chunks
+        verify_merch_refs_across_chunks(pf, scene_metadata)
 
         logging.info(f"Chunk{chunk_index} executed successfully for scene_uuid: {scene_metadata['scene_uuid']}")
 
