@@ -3,6 +3,7 @@
 # Sequential Chunk Integration (0 → 14)
 # Deterministic Scene Ingestion + Micro-Beats/Arcs + Merch Evidence + Trinity Advisory
 # Scene Metadata Normalization + Inflection Points Cross-Chunk Continuity
+# Arc computation thresholds configurable per scene/episode with optional smoothing
 # ================================
 
 import json
@@ -10,6 +11,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import uuid
+from statistics import mean
 
 from workflow_utils import (
     read_passfile,
@@ -39,6 +41,11 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 PASSFILE_PATH = Path("passfile.json")
 DEFAULT_CHUNK_SIZE = 5
 KEYWORDS = ["dominance", "submission", "tension", "release", "erotic", "gaze", "posture", "voice", "control"]
+DEFAULT_ARC_THRESHOLDS = {
+    "erotic_peak": 0.3,  # threshold for peak labeling
+    "fast_pacing_word_count": 30
+}
+ROLLING_AVG_WINDOW = 3  # for smoothing arcs
 
 # -----------------------
 # Helpers
@@ -90,16 +97,32 @@ def compute_micro_beats_adaptive(scene_text: str, beat_list: Optional[List[Dict[
             micro_beats.append({"beat_uuid": f"synthetic_{i//chunk_size}", "text": chunk, "keyword_counts": counts})
     return micro_beats
 
-def compute_arcs_adaptive(micro_beats: List[Dict[str, Any]]) -> Dict[str, Any]:
+def compute_arcs_adaptive(micro_beats: List[Dict[str, Any]],
+                           thresholds: Optional[Dict[str, float]] = None,
+                           rolling_window: int = ROLLING_AVG_WINDOW) -> Dict[str, Any]:
+    thresholds = thresholds or DEFAULT_ARC_THRESHOLDS
+    erotic_peak_thresh = thresholds.get("erotic_peak", 0.3)
+    fast_word_count = thresholds.get("fast_pacing_word_count", 30)
+
     emotional_arc, erotic_arc, pacing_notes = {}, {}, {}
+    erotic_values = []
+
     for beat in micro_beats:
         beat_id = beat["beat_uuid"]
         counts = beat["keyword_counts"]
         total = sum(counts.values()) or 1
         normalized = {k: v / total for k, v in counts.items()}
         emotional_arc[beat_id] = normalized
-        erotic_arc[beat_id] = "peak" if normalized.get("erotic", 0) > 0.3 else "build"
-        pacing_notes[beat_id] = "fast" if len(beat["text"].split()) > 30 else "steady"
+        erotic_values.append(normalized.get("erotic", 0))
+        pacing_notes[beat_id] = "fast" if len(beat["text"].split()) > fast_word_count else "steady"
+
+    # Apply rolling average smoothing to erotic_arc
+    for i, beat in enumerate(micro_beats):
+        window_vals = erotic_values[max(0, i - rolling_window + 1): i + 1]
+        smoothed = mean(window_vals)
+        beat_id = beat["beat_uuid"]
+        erotic_arc[beat_id] = "peak" if smoothed > erotic_peak_thresh else "build"
+
     return {"emotional_arc": emotional_arc, "erotic_arc": erotic_arc, "pacing_strategy_notes": pacing_notes}
 
 def identify_inflection_points_weighted(micro_beats: List[Dict[str, Any]]) -> List[str]:
@@ -114,9 +137,6 @@ def identify_inflection_points_weighted(micro_beats: List[Dict[str, Any]]) -> Li
     return points
 
 def propagate_inflection_points_across_chunks(scene_record: Dict[str, Any], previous_scene_record: Optional[Dict[str, Any]] = None, next_scene_record: Optional[Dict[str, Any]] = None) -> List[str]:
-    """
-    Extend inflection points with previous and next scene continuity.
-    """
     inflection_points = list(scene_record.get("inflection_points", []))
     if previous_scene_record:
         inflection_points = previous_scene_record.get("inflection_points", []) + inflection_points
@@ -161,7 +181,8 @@ def package_scene_record(scene_text: str, scene_metadata: Dict[str, Any], arcs: 
 # -----------------------
 def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = range(0, 15),
                   previous_scene_record: Optional[Dict[str, Any]] = None,
-                  next_scene_record: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                  next_scene_record: Optional[Dict[str, Any]] = None,
+                  arc_thresholds: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     pf = read_passfile(passfile_path)
 
     for chunk_index in chunk_range:
@@ -186,7 +207,7 @@ def pipeline_full(passfile_path: str = str(PASSFILE_PATH), chunk_range: range = 
         # Beats & Micro-Beats
         assign_beat_uuids_stable(pf["beat_list"], scene_metadata)
         micro_beats = compute_micro_beats_adaptive(scene_text, pf["beat_list"])
-        arcs = compute_arcs_adaptive(micro_beats)
+        arcs = compute_arcs_adaptive(micro_beats, thresholds=arc_thresholds)
         inflection_points = identify_inflection_points_weighted(micro_beats)
 
         # Scene Record
